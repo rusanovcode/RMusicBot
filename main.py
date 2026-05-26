@@ -62,7 +62,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text, reply_markup = get_player_data(0)
-    results = [InlineQueryResultArticle(id=str(uuid4()), title="🎵 Запустить аудио плеер", input_message_content=InputTextMessageContent(text=text, parse_mode="Markdown"), reply_markup=reply_markup)]
+    results = [
+        InlineQueryResultArticle(
+            id=str(uuid4()), 
+            title="🎵 Запустить аудио плеер", 
+            # Исправлено: text заменено на message_text
+            input_message_content=InputTextMessageContent(message_text=text, parse_mode="Markdown"), 
+            reply_markup=reply_markup
+        )
+    ]
     await update.inline_query.answer(results, cache_time=1)
 
 # АВТОДОБАВЛЕНИЕ: Бот слушает новые аудиофайлы от админа

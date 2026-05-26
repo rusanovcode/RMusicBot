@@ -2,7 +2,8 @@ import os
 import json
 import base64
 import requests
-import asyncio
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, InlineQueryHandler, MessageHandler, filters, ContextTypes
 from uuid import uuid4
@@ -38,7 +39,7 @@ def save_tracks(tracks, sha=None):
     try:
         requests.put(url, headers=headers, json=data)
     except Exception as e:
-        print(f"Ошибка保存плейлиста: {e}")
+        print(f"Ошибка сохранения плейлиста: {e}")
 
 # Загружаем треки при старте
 try:
@@ -47,12 +48,12 @@ except:
     TRACKS, FILE_SHA = [], None
 
 if not TRACKS:
-    TRACKS = [{"title": "Плейлист пуст. Отправьте мне mp3 файлы!", "file_id": ""}]
+    TRACKS = [{"title": "Плейлист пуст. Отправьте мне mp3 файлы в вашу группу или личку!", "file_id": ""}]
 
 def get_player_data(idx: int):
     global TRACKS
     if not TRACKS:
-        TRACKS = [{"title": "Плейлист пуст. Отправьте мне mp3 файлы!", "file_id": ""}]
+        TRACKS = [{"title": "Плейлист пуст. Отправьте мне mp3 файлы в вашу группу или личку!", "file_id": ""}]
         
     idx = idx % len(TRACKS)
     track = TRACKS[idx]
@@ -93,6 +94,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await update.inline_query.answer(results, cache_time=0)
 
+# АВТОДОБАВЛЕНИЕ: Бот слушает новые аудиофайлы из лички и групп
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TRACKS, FILE_SHA
 
@@ -141,29 +143,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("⬅️ Вернуться в плеер", callback_data="play_0")]]
         await query.edit_message_text(text=list_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-# Фиктивный HTTP-сервер для прохождения Port Binding на Render Web Service
-async def dummy_server():
-    port = int(os.environ.get("PORT", 10000))
-    server = await asyncio.start_server(lambda r, w: w.close(), "0.0.0.0", port)
-    print(f"Фиктивный веб-сервер запущен на порту {port}...")
-    async with server:
-        await server.serve_forever()
+# Легковесный системный веб-сервер для прохождения Port Binding на Render
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, format, *args):
+        pass # Отключаем лишний спам в логи
 
-async def run_bot_and_server(app):
-    # Принудительно очищаем старые зависшие вебхуки Telegram
-    await app.bot.delete_webhook(drop_pending_updates=True)
-    print("Старый вебхук очищен. Запуск Long Polling...")
-    
-    # Запускаем бота и фиктивный сервер одновременно
-    await asyncio.gather(
-        app.updater.start_polling(),
-        dummy_server()
-    )
-    # Держим приложение активным
-    while True:
-        await asyncio.sleep(3600)
+def run_health_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    print(f"Системный порт {port} успешно занят.")
+    server.serve_forever()
 
 def main():
+    # 1. Запуск фиктивного веб-сервера в фоновом потоке, чтобы Render не ругался
+    threading.Thread(target=run_health_server, daemon=True).start()
+
+    # 2. Инициализация и классический запуск Telegram-бота на Long Polling
     token = os.environ.get("BOT_TOKEN")
     app = Application.builder().token(token).build()
     
@@ -172,10 +172,9 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.AUDIO, handle_audio))
     
-    # Инициализация асинхронного цикла
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(app.initialize())
-    loop.run_until_complete(run_bot_and_server(app))
+    print("Бот запущен. Ожидание обновлений...")
+    # drop_pending_updates=True автоматически сбросит конфликт вебхуков при старте!
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
     main()

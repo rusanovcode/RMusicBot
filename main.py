@@ -11,7 +11,6 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
 REPO_RAW = os.environ.get("GITHUB_REPO", "").strip("/")
 # Формируем правильный путь к репозиторию
 GITHUB_REPO = f"/{REPO_RAW}" if REPO_RAW else ""
-OWNER_ID = int(os.environ.get("OWNER_ID", 0))
 FILE_PATH = "playlist.json"
 
 def load_tracks():
@@ -94,8 +93,6 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # АВТОДОБАВЛЕНИЕ: Бот слушает новые аудиофайлы из публичной группы
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TRACKS, FILE_SHA
-    if OWNER_ID and update.effective_user.id != OWNER_ID:
-        return 
 
     audio = update.message.audio
     msg_id = update.message.message_id
@@ -136,7 +133,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         TRACKS = updated_tracks
 
     if query.data.startswith("play_"):
-        # Исправлено: забираем ID трека по индексу [1] после разделения строки
+        # Исправлено: забираем ID трека по индексу после разделения строки
         idx = int(query.data.split("_")[1])
         text, reply_markup = get_player_data(idx)
         await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode="Markdown")

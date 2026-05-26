@@ -9,7 +9,7 @@ from uuid import uuid4
 # Конфигурация GitHub для автосохранения
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
 REPO_RAW = os.environ.get("GITHUB_REPO", "").strip("/")
-# Гарантируем правильный формат: /repos/owner/repo/contents/...
+# Формируем правильный путь к репозиторию
 GITHUB_REPO = f"/{REPO_RAW}" if REPO_RAW else ""
 OWNER_ID = int(os.environ.get("OWNER_ID", 0))
 FILE_PATH = "playlist.json"
@@ -74,7 +74,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TRACKS, FILE_SHA
-    # Перед открытием инлайна пытаемся актуализировать треки из GitHub
+    # Перед открытием инлайна пытаемся получить актуальные треки из GitHub
     updated_tracks, updated_sha = load_tracks()
     if updated_tracks:
         TRACKS, FILE_SHA = updated_tracks, updated_sha
@@ -100,22 +100,23 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     audio = update.message.audio
     msg_id = update.message.message_id
     
+    # Формируем рабочую ссылку для публичной группы
     if update.message.chat.username:
-        tg_url = f"https://t.me/{update.message.chat.username}/{msg_id}"
+        tg_url = f"https://t.me{update.message.chat.username}/{msg_id}"
     else:
         chat_id = str(update.message.chat_id).replace("-100", "")
-        tg_url = f"https://t.me{chat_id}/{msg_id}"
+        tg_url = f"https://t.mec/{chat_id}/{msg_id}"
 
     title = audio.title if audio.title else audio.file_name
     if audio.performer:
         title = f"{audio.performer} — {title}"
 
-    # Синхронизируем базу перед записью
+    # Синхронизируем базу перед записью нового трека
     updated_tracks, updated_sha = load_tracks()
     TRACKS = updated_tracks if updated_tracks else []
     FILE_SHA = updated_sha
     
-    # Очищаем дефолтную заглушку, если она была в базе
+    # Если база состояла из дефолтной заглушки — очищаем её перед добавлением реального трека
     if len(TRACKS) == 1 and "Плейлист пуст" in TRACKS[0]["title"]:
         TRACKS = []
         
@@ -135,7 +136,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         TRACKS = updated_tracks
 
     if query.data.startswith("play_"):
-        # ИСПРАВЛЕНО: Теперь берется корректный [1] элемент после сплита строки (индекс трека)
+        # Исправлено: забираем ID трека по индексу [1] после разделения строки
         idx = int(query.data.split("_")[1])
         text, reply_markup = get_player_data(idx)
         await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode="Markdown")

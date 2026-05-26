@@ -2,8 +2,8 @@ import os
 import json
 import base64
 import requests
-from telegram import Update, InlineQueryResultCachedAudio
-from telegram.ext import Application, CommandHandler, InlineQueryHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, InlineQueryHandler, MessageHandler, filters, ContextTypes
 from uuid import uuid4
 
 # Конфигурация GitHub для автосохранения
@@ -45,33 +45,70 @@ try:
 except:
     TRACKS, FILE_SHA = [], None
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🎵 *RMusicBot готов к работе!*\n\n"
-        "Бот работает в **Инлайн-режиме**.\n"
-        "Чтобы поделиться музыкой, перейдите в любой чат, введите `@имя_вашего_бота` и выберите нужный трек из списка.",
-        parse_mode="Markdown"
-    )
+if not TRACKS:
+    TRACKS = [{"title": "Плейлист пуст. Отправьте мне mp3 файлы!", "file_id": ""}]
 
-# АВТОДОБАВЛЕНИЕ: Бот слушает новые аудиофайлы (в личке и в группе)
+def get_player_data(idx: int):
+    global TRACKS
+    if not TRACKS:
+        TRACKS = [{"title": "Плейлист пуст. Отправьте мне mp3 файлы!", "file_id": ""}]
+        
+    idx = idx % len(TRACKS)
+    track = TRACKS[idx]
+    
+    text = f"🎵 *МУЗЫКАЛЬНЫЙ ПЛЕЕР*\n\n📌 Название: {track['title']}\n\n_Всего песен в базе: {len(TRACKS)}_"
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("◀️ Назад", callback_data=f"play_{(idx - 1) % len(TRACKS)}"),
+            InlineKeyboardButton("▶️ Вперед", callback_data=f"play_{(idx + 1) % len(TRACKS)}")
+        ],
+        [
+            # Кнопка отправляет настоящий аудиофайл в чат без перехода в браузер
+            InlineKeyboardButton("🎵 Включить этот трек", callback_data=f"send_{idx}")
+        ],
+        [InlineKeyboardButton("📋 Список песен", callback_data="show_list")]
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text, reply_markup = get_player_data(0)
+    await update.message.reply_text(text=text, reply_markup=reply_markup, parse_mode="Markdown")
+
+async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global TRACKS, FILE_SHA
+    updated_tracks, updated_sha = load_tracks()
+    if updated_tracks:
+        TRACKS, FILE_SHA = updated_tracks, updated_sha
+
+    text, reply_markup = get_player_data(0)
+    
+    results = [
+        InlineQueryResultArticle(
+            id=str(uuid4()), 
+            title="🎵 Открыть музыкальный плеер", 
+            input_message_content=InputTextMessageContent(message_text=text, parse_mode="Markdown"), 
+            reply_markup=reply_markup
+        )
+    ]
+    await update.inline_query.answer(results, cache_time=1)
+
+# АВТОДОБАВЛЕНИЕ: Бот слушает новые аудиофайлы везде
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TRACKS, FILE_SHA
 
     audio = update.message.audio
-    # Сохраняем уникальный внутренний ID файла в Telegram
     file_id = audio.file_id  
 
     title = audio.title if audio.title else audio.file_name
     performer = audio.performer if audio.performer else "Неизвестный исполнитель"
     full_title = f"{performer} — {title}"
 
-    # Синхронизируем базу перед записью нового трека
     updated_tracks, updated_sha = load_tracks()
     TRACKS = updated_tracks if updated_tracks else []
     FILE_SHA = updated_sha
     
-    # Очищаем дефолтную заглушку, если она была в базе
-    if len(TRACKS) == 1 and "Плейлист пуст" in TRACKS[0].get("title", ""):
+    if len(TRACKS) == 1 and "Плейлист пуст" in TRACKS[0]["title"]:
         TRACKS = []
         
     TRACKS.append({"title": full_title, "file_id": file_id})
@@ -79,32 +116,30 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(f"✅ Трек успешно добавлен в плеер:\n*{full_title}*", parse_mode="Markdown")
 
-# ИНЛАЙН РЕЖИМ: Поиск и отправка треков с кнопкой PLAY
-async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global TRACKS, FILE_SHA
-    query = update.inline_query.query.lower()
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
     
-    # Пытаемся получить свежий список треков из GitHub
+    global TRACKS
     updated_tracks, _ = load_tracks()
     if updated_tracks:
         TRACKS = updated_tracks
 
-    results = []
-    for track in TRACKS:
-        if "file_id" not in track:
-            continue
+    if query.data.startswith("play_"):
+        idx = int(query.data.split("_")[1])
+        text, reply_markup = get_player_data(idx)
+        await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode="Markdown")
+        
+    elif query.data.startswith("send_"):
+        idx = int(query.data.split("_")[1])
+        if idx < len(TRACKS) and "file_id" in TRACKS[idx] and TRACKS[idx]["file_id"]:
+            # Бот присылает настоящий аудиофайл прямо в текущий чат!
+            await context.bot.send_audio(chat_id=query.message.chat_id, audio=TRACKS[idx]["file_id"])
             
-        # Фильтруем треки, если пользователь начал вводить название
-        if not query or query in track['title'].lower():
-            results.append(
-                InlineQueryResultCachedAudio(
-                    id=str(uuid4()),
-                    audio_file_id=track['file_id'],  # Telegram сам превратит это в плеер с Play/Pause!
-                    caption=f"🎵 Отправлено через @{context.bot.username}"
-                )
-            )
-            
-    await update.inline_query.answer(results[:50], cache_time=1)
+    elif query.data == "show_list":
+        list_text = "📋 *Список доступных песен:*\n\n" + "\n".join([f"{i+1}. {t['title']}" for i, t in enumerate(TRACKS)])
+        keyboard = [[InlineKeyboardButton("⬅️ Вернуться в плеер", callback_data="play_0")]]
+        await query.edit_message_text(text=list_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 def main():
     token = os.environ.get("BOT_TOKEN")
@@ -112,7 +147,10 @@ def main():
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(InlineQueryHandler(inline_query))
-    app.add_handler(MessageHandler(filters.AUDIO, handle_audio))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    
+    # Расширенный фильтр: слушаем аудио в личке, группах и супергруппах
+    app.add_handler(MessageHandler(filters.AUDIO | filters.ChatType.GROUPS, handle_audio))
     
     port = int(os.environ.get("PORT", 8443))
     app.run_webhook(

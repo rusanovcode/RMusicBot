@@ -64,8 +64,7 @@ def get_player_data(idx: int):
             InlineKeyboardButton("▶️ Вперед", callback_data=f"play_{(idx + 1) % len(TRACKS)}")
         ],
         [
-            # Кнопка отправляет настоящий аудиофайл в чат без перехода в браузер
-            InlineKeyboardButton("🎵 Включить этот трек", callback_data=f"send_{idx}")
+            InlineKeyboardButton("🎵 Воспроизвести этот трек", callback_data=f"send_{idx}")
         ],
         [InlineKeyboardButton("📋 Список песен", callback_data="show_list")]
     ]
@@ -91,13 +90,17 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup
         )
     ]
-    await update.inline_query.answer(results, cache_time=1)
+    # cache_time=0 отключает кэширование Telegram, чтобы кнопки сразу обновлялись
+    await update.inline_query.answer(results, cache_time=0)
 
-# АВТОДОБАВЛЕНИЕ: Бот слушает новые аудиофайлы везде
+# АВТОДОБАВЛЕНИЕ: Бот слушает новые аудиофайлы
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TRACKS, FILE_SHA
 
     audio = update.message.audio
+    if not audio:
+        return
+        
     file_id = audio.file_id  
 
     title = audio.title if audio.title else audio.file_name
@@ -133,7 +136,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data.startswith("send_"):
         idx = int(query.data.split("_")[1])
         if idx < len(TRACKS) and "file_id" in TRACKS[idx] and TRACKS[idx]["file_id"]:
-            # Бот присылает настоящий аудиофайл прямо в текущий чат!
+            # Бот отправляет аудиофайл прямо в текущий чат
             await context.bot.send_audio(chat_id=query.message.chat_id, audio=TRACKS[idx]["file_id"])
             
     elif query.data == "show_list":
@@ -149,8 +152,8 @@ def main():
     app.add_handler(InlineQueryHandler(inline_query))
     app.add_handler(CallbackQueryHandler(button_handler))
     
-    # Расширенный фильтр: слушаем аудио в личке, группах и супергруппах
-    app.add_handler(MessageHandler(filters.AUDIO | filters.ChatType.GROUPS, handle_audio))
+    # Правильный и безопасный фильтр для всех типов чатов
+    app.add_handler(MessageHandler(filters.AUDIO, handle_audio))
     
     port = int(os.environ.get("PORT", 8443))
     app.run_webhook(

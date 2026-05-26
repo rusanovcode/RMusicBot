@@ -90,10 +90,8 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup
         )
     ]
-    # cache_time=0 отключает кэширование Telegram, чтобы кнопки сразу обновлялись
     await update.inline_query.answer(results, cache_time=0)
 
-# АВТОДОБАВЛЕНИЕ: Бот слушает новые аудиофайлы
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TRACKS, FILE_SHA
 
@@ -102,7 +100,6 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
         
     file_id = audio.file_id  
-
     title = audio.title if audio.title else audio.file_name
     performer = audio.performer if audio.performer else "Неизвестный исполнитель"
     full_title = f"{performer} — {title}"
@@ -136,7 +133,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data.startswith("send_"):
         idx = int(query.data.split("_")[1])
         if idx < len(TRACKS) and "file_id" in TRACKS[idx] and TRACKS[idx]["file_id"]:
-            # Бот отправляет аудиофайл прямо в текущий чат
             await context.bot.send_audio(chat_id=query.message.chat_id, audio=TRACKS[idx]["file_id"])
             
     elif query.data == "show_list":
@@ -151,17 +147,11 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(InlineQueryHandler(inline_query))
     app.add_handler(CallbackQueryHandler(button_handler))
-    
-    # Правильный и безопасный фильтр для всех типов чатов
     app.add_handler(MessageHandler(filters.AUDIO, handle_audio))
     
-    port = int(os.environ.get("PORT", 8443))
-    app.run_webhook(
-        listen="0.0.0.0", 
-        port=port, 
-        url_path=token, 
-        webhook_url=f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/{token}"
-    )
+    # ИЗМЕНЕНО: Бот переключен на стабильный режим Long Polling
+    print("Бот успешно запущен в режиме Long Polling...")
+    app.run_polling()
 
 if __name__ == '__main__':
     main()

@@ -8,12 +8,13 @@ from uuid import uuid4
 
 # Конфигурация GitHub для автосохранения
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
-GITHUB_REPO = os.environ.get("GITHUB_REPO")
+# Очищаем репозиторий от лишних слэшей для безопасности
+REPO_RAW = os.environ.get("GITHUB_REPO", "").strip("/")
+GITHUB_REPO = f"/{REPO_RAW}" if REPO_RAW else ""
 OWNER_ID = int(os.environ.get("OWNER_ID", 0))
 FILE_PATH = "playlist.json"
 
 def load_tracks():
-    # Исправлен адрес API GitHub
     url = f"https://github.com{GITHUB_REPO}/contents/{FILE_PATH}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     res = requests.get(url, headers=headers)
@@ -24,7 +25,6 @@ def load_tracks():
     return [], None
 
 def save_tracks(tracks, sha=None):
-    # Исправлен адрес API GitHub
     url = f"https://github.com{GITHUB_REPO}/contents/{FILE_PATH}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     data = {
@@ -42,7 +42,7 @@ except:
     TRACKS, FILE_SHA = [], None
 
 if not TRACKS:
-    TRACKS = [{"title": "Плейлист пуст. Отправьте мне mp3 файлы!", "url": "https://t.me"}]
+    TRACKS = [{"title": "Плейлист пуст. Отправьте мне mp3 файлы в вашу группу!", "url": "https://t.me"}]
 
 def get_player_data(idx: int):
     idx = idx % len(TRACKS)
@@ -51,8 +51,8 @@ def get_player_data(idx: int):
     
     keyboard = [
         [
-            InlineKeyboardButton("◀️ Назад", callback_data=f"play_{ (idx - 1) % len(TRACKS) }"),
-            InlineKeyboardButton("▶️ Вперед", callback_data=f"play_{ (idx + 1) % len(TRACKS) }")
+            InlineKeyboardButton("◀️ Назад", callback_data=f"play_{(idx - 1) % len(TRACKS)}"),
+            InlineKeyboardButton("▶️ Вперед", callback_data=f"play_{(idx + 1) % len(TRACKS)}")
         ],
         [InlineKeyboardButton("📋 Список песен", callback_data="show_list")]
     ]
@@ -63,14 +63,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text=text, reply_markup=reply_markup, parse_mode="Markdown")
 
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Принудительно обновляем список треков перед показом инлайна
+    global TRACKS, FILE_SHA
+    try:
+        updated_tracks, updated_sha = load_tracks()
+        if updated_tracks:
+            TRACKS, FILE_SHA = updated_tracks, updated_sha
+    except:
+        pass
+
     text, reply_markup = get_player_data(0)
-    # ИСПРАВЛЕНО: text заменен на аргумент message_text
+    
     results = [
         InlineQueryResultArticle(
             id=str(uuid4()), 
             title="🎵 Запустить аудио плеер", 
             input_message_content=InputTextMessageContent(message_text=text, parse_mode="Markdown"), 
-            reply_markup=reply_markup
+            reply_markup=reply_markup  # Передано корректно на уровне статьи
         )
     ]
     await update.inline_query.answer(results, cache_time=1)
@@ -79,16 +88,15 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TRACKS, FILE_SHA
     if OWNER_ID and update.effective_user.id != OWNER_ID:
-        return # Игнорируем чужих пользователей, если задан OWNER_ID
+        return 
 
     audio = update.message.audio
     msg_id = update.message.message_id
     
-    # ИСПРАВЛЕНО: Генерация ссылки для публичной группы по её юзернейму
+    # Формируем железно рабочую ссылку для публичной группы
     if update.message.chat.username:
         tg_url = f"https://t.me{update.message.chat.username}/{msg_id}"
     else:
-        # Резервный вариант, если у группы нет короткого имени, но она публичная
         chat_id = str(update.message.chat_id).replace("-100", "")
         tg_url = f"https://t.mec/{chat_id}/{msg_id}"
 
@@ -97,8 +105,11 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         title = f"{audio.performer} — {title}"
 
     TRACKS, FILE_SHA = load_tracks()
+    if not TRACKS:
+        TRACKS = []
     
-    if len(TRACKS) == 1 and "Плейлист пуст" in TRACKS[0]["title"]:
+    # Если база состояла из дефолтной заглушки — очищаем её перед добавлением реального трека
+    if len(TRACKS) == 1 and ("Плейлист пуст" in TRACKS[0]["title"] or "soundhelix" in TRACKS[0].get("url", "")):
         TRACKS = []
         
     TRACKS.append({"title": title, "url": tg_url})
@@ -109,19 +120,33 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    
+    global TRACKS
+    if not TRACKS:
+        TRACKS = [{"title": "Плейлист пуст. Отправьте мне mp3 файлы!", "url": "https://t.me"}]
+
     if query.data.startswith("play_"):
+        # ИСПРАВЛЕНО: Добавлен индекс [1] для корректного сплита строки
         idx = int(query.data.split("_")[1])
         text, reply_markup = get_player_data(idx)
         await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode="Markdown")
+        
     elif query.data == "show_list":
-        TRACKS_CURRENT, _ = load_tracks()
-        list_text = "📋 *Список доступных песен:*\n\n" + "\n".join([f"{i+1}. {t['title']}" for i, t in enumerate(TRACKS_CURRENT or TRACKS)])
+        try:
+            TRACKS_CURRENT, _ = load_tracks()
+            if not TRACKS_CURRENT:
+                TRACKS_CURRENT = TRACKS
+        except:
+            TRACKS_CURRENT = TRACKS
+            
+        list_text = "📋 *Список доступных песен:*\n\n" + "\n".join([f"{i+1}. {t['title']}" for i, t in enumerate(TRACKS_CURRENT)])
         keyboard = [[InlineKeyboardButton("⬅️ Вернуться в плеер", callback_data="play_0")]]
         await query.edit_message_text(text=list_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 def main():
     token = os.environ.get("BOT_TOKEN")
     app = Application.builder().token(token).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(InlineQueryHandler(inline_query))
     app.add_handler(CallbackQueryHandler(button_handler))

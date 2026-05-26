@@ -2,6 +2,7 @@ import os
 import json
 import base64
 import requests
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, InlineQueryHandler, MessageHandler, filters, ContextTypes
 from uuid import uuid4
@@ -37,7 +38,7 @@ def save_tracks(tracks, sha=None):
     try:
         requests.put(url, headers=headers, json=data)
     except Exception as e:
-        print(f"Ошибка сохранения плейлиста: {e}")
+        print(f"Ошибка保存плейлиста: {e}")
 
 # Загружаем треки при старте
 try:
@@ -140,6 +141,28 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("⬅️ Вернуться в плеер", callback_data="play_0")]]
         await query.edit_message_text(text=list_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
+# Фиктивный HTTP-сервер для прохождения Port Binding на Render Web Service
+async def dummy_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = await asyncio.start_server(lambda r, w: w.close(), "0.0.0.0", port)
+    print(f"Фиктивный веб-сервер запущен на порту {port}...")
+    async with server:
+        await server.serve_forever()
+
+async def run_bot_and_server(app):
+    # Принудительно очищаем старые зависшие вебхуки Telegram
+    await app.bot.delete_webhook(drop_pending_updates=True)
+    print("Старый вебхук очищен. Запуск Long Polling...")
+    
+    # Запускаем бота и фиктивный сервер одновременно
+    await asyncio.gather(
+        app.updater.start_polling(),
+        dummy_server()
+    )
+    # Держим приложение активным
+    while True:
+        await asyncio.sleep(3600)
+
 def main():
     token = os.environ.get("BOT_TOKEN")
     app = Application.builder().token(token).build()
@@ -149,9 +172,10 @@ def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.AUDIO, handle_audio))
     
-    # ИЗМЕНЕНО: Бот переключен на стабильный режим Long Polling
-    print("Бот успешно запущен в режиме Long Polling...")
-    app.run_polling()
+    # Инициализация асинхронного цикла
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(app.initialize())
+    loop.run_until_complete(run_bot_and_server(app))
 
 if __name__ == '__main__':
     main()

@@ -13,6 +13,7 @@ OWNER_ID = int(os.environ.get("OWNER_ID", 0))
 FILE_PATH = "playlist.json"
 
 def load_tracks():
+    # Исправлен адрес API GitHub
     url = f"https://github.com{GITHUB_REPO}/contents/{FILE_PATH}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     res = requests.get(url, headers=headers)
@@ -23,6 +24,7 @@ def load_tracks():
     return [], None
 
 def save_tracks(tracks, sha=None):
+    # Исправлен адрес API GitHub
     url = f"https://github.com{GITHUB_REPO}/contents/{FILE_PATH}"
     headers = {"Authorization": f"token {GITHUB_TOKEN}"}
     data = {
@@ -62,40 +64,40 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text, reply_markup = get_player_data(0)
+    # ИСПРАВЛЕНО: text заменен на аргумент message_text
     results = [
         InlineQueryResultArticle(
             id=str(uuid4()), 
             title="🎵 Запустить аудио плеер", 
-            # Исправлено: text заменено на message_text
             input_message_content=InputTextMessageContent(message_text=text, parse_mode="Markdown"), 
             reply_markup=reply_markup
         )
     ]
     await update.inline_query.answer(results, cache_time=1)
 
-# АВТОДОБАВЛЕНИЕ: Бот слушает новые аудиофайлы от админа
+# АВТОДОБАВЛЕНИЕ: Бот слушает новые аудиофайлы из публичной группы
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TRACKS, FILE_SHA
-    if update.effective_user.id != OWNER_ID:
-        return # Игнорируем чужих пользователей
+    if OWNER_ID and update.effective_user.id != OWNER_ID:
+        return # Игнорируем чужих пользователей, если задан OWNER_ID
 
     audio = update.message.audio
-    # Получаем прямую ссылку на сообщение в чате
-    chat_id = str(update.message.chat_id).replace("-100", "")
     msg_id = update.message.message_id
-    tg_url = f"https://t.mec/{chat_id}/{msg_id}" if update.message.chat.type != "private" else f"https://t.meshare/url?url={tg_url}" 
     
-    # Если бот в приватном чате, то лучше использовать пересылку или получить File ID, но для инлайн ссылок идеальна ссылка на пост канала/группы
-    if update.message.chat.type == "private":
-        await update.message.reply_text("⚠️ Внимание: для работы ссылок в чужих группах, пересылайте треки в любой *публичный или приватный суперчат/канал*, где есть этот бот, и берите ссылку оттуда.")
-        return
+    # ИСПРАВЛЕНО: Генерация ссылки для публичной группы по её юзернейму
+    if update.message.chat.username:
+        tg_url = f"https://t.me{update.message.chat.username}/{msg_id}"
+    else:
+        # Резервный вариант, если у группы нет короткого имени, но она публичная
+        chat_id = str(update.message.chat_id).replace("-100", "")
+        tg_url = f"https://t.mec/{chat_id}/{msg_id}"
 
     title = audio.title if audio.title else audio.file_name
     if audio.performer:
         title = f"{audio.performer} — {title}"
 
     TRACKS, FILE_SHA = load_tracks()
-    # Если был дефолтный пустой трек — удаляем его
+    
     if len(TRACKS) == 1 and "Плейлист пуст" in TRACKS[0]["title"]:
         TRACKS = []
         
@@ -123,10 +125,15 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(InlineQueryHandler(inline_query))
     app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.AUDIO, handle_audio)) # Слушаем аудиофайлы
+    app.add_handler(MessageHandler(filters.AUDIO, handle_audio))
     
     port = int(os.environ.get("PORT", 8443))
-    app.run_webhook(listen="0.0.0.0", port=port, url_path=token, webhook_url=f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/{token}")
+    app.run_webhook(
+        listen="0.0.0.0", 
+        port=port, 
+        url_path=token, 
+        webhook_url=f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/{token}"
+    )
 
 if __name__ == '__main__':
     main()

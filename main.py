@@ -2,7 +2,8 @@ import os
 import json
 import base64
 import requests
-from aiohttp import web
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, InlineQueryHandler, MessageHandler, filters, ContextTypes
 from uuid import uuid4
@@ -47,12 +48,12 @@ except:
     TRACKS, FILE_SHA = [], None
 
 if not TRACKS:
-    TRACKS = [{"title": "Плейлист пуст. Отправьте мне mp3 файлы в вашу группу или личку!", "file_id": ""}]
+    TRACKS = [{"title": "Плейлист пуст. Отправьте мне mp3 файлы!", "file_id": ""}]
 
 def get_player_data(idx: int):
     global TRACKS
     if not TRACKS:
-        TRACKS = [{"title": "Плейлист пуст. Отправьте мне mp3 файлы в вашу группу или личку!", "file_id": ""}]
+        TRACKS = [{"title": "Плейлист пуст. Отправьте мне mp3 файлы!", "file_id": ""}]
         
     idx = idx % len(TRACKS)
     track = TRACKS[idx]
@@ -91,10 +92,10 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup
         )
     ]
-    # ВАЖНО: cache_time=1 убирает вечное залипание старых кнопок в Telegram
+    # Отключаем агрессивный кэш Telegram, чтобы кнопки реагировали сразу
     await update.inline_query.answer(results, cache_time=1, is_personal=True)
 
-# АВТОДОБАВЛЕНИЕ: Бот слушает новые аудиофайлы из лички и из групп
+# АВТОДОБАВЛЕНИЕ: Бот слушает новые аудиофайлы
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TRACKS, FILE_SHA
 
@@ -129,14 +130,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         TRACKS = updated_tracks
 
     if query.data.startswith("play_"):
-        idx = int(query.data.split("_")[1]) # Исправлен индекс сплита
+        idx = int(query.data.split("_")[1])
         text, reply_markup = get_player_data(idx)
         await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode="Markdown")
         
     elif query.data.startswith("send_"):
-        idx = int(query.data.split("_")[1]) # Исправлен индекс сплита
+        idx = int(query.data.split("_")[1])
         if idx < len(TRACKS) and "file_id" in TRACKS[idx] and TRACKS[idx]["file_id"]:
-            # Бот отправляет аудиофайл прямо в текущий чат
+            # Отправляем аудио файл прямо в текущий чат
             await context.bot.send_audio(chat_id=query.message.chat_id, audio=TRACKS[idx]["file_id"])
             
     elif query.data == "show_list":
@@ -144,36 +145,35 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("⬅️ Вернуться в плеер", callback_data="play_0")]]
         await query.edit_message_text(text=list_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-# Официальный веб-сервер для прохождения Port Binding на Render
-async def handle_health(request):
-    return web.Response(text="OK")
+# Легковесный фоновый веб-сервер для закрытия Port Binding на Render
+class RenderHealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, format, *args):
+        pass
 
-async def start_web_server():
-    app = web.Application()
-    app.router.add_get("/", handle_health)
-    runner = web.AppRunner(app)
-    await runner.setup()
+def start_health_server():
     port = int(os.environ.get("PORT", 10000))
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    print(f"Веб-сервер успешно запущен на порту {port}")
+    server = HTTPServer(("0.0.0.0", port), RenderHealthHandler)
+    server.serve_forever()
 
 def main():
+    # Запускаем пинг-сервер в изолированном фоновом потоке, освобождая главный поток для бота
+    threading.Thread(target=start_health_server, daemon=True).start()
+
     token = os.environ.get("BOT_TOKEN")
     app = Application.builder().token(token).build()
     
     app.add_handler(CommandHandler("start", start))
     app.add_handler(InlineQueryHandler(inline_query))
     app.add_handler(CallbackQueryHandler(button_handler))
-    
-    # Слушаем аудио везде
     app.add_handler(MessageHandler(filters.AUDIO, handle_audio))
     
-    # Интегрируем веб-сервер в асинхронный цикл бота перед стартом polling
-    app.post_init = lambda application: start_web_server()
-    
-    print("Запуск бота...")
-    # Очищаем старые вебхуки для предотвращения ошибки Conflict
+    print("Бот успешно запущен в стабильном режиме.")
+    # drop_pending_updates=True очистит все зависшие конфликты старых вебхуков
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':

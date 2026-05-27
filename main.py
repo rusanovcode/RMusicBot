@@ -3,6 +3,7 @@ import json
 import base64
 import requests
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, InlineQueryHandler, MessageHandler, filters, ContextTypes
@@ -15,8 +16,12 @@ GITHUB_REPO = f"/{REPO_RAW}" if REPO_RAW else ""
 FILE_PATH = "playlist.json"
 
 def load_tracks():
-    url = f"https://github.com{GITHUB_REPO}/contents/{FILE_PATH}"
-    headers = {"Authorization": f"token {GITHUB_TOKEN}"}
+    # Добавляем случайный параметр против кэширования со стороны серверов GitHub
+    url = f"https://github.com{GITHUB_REPO}/contents/{FILE_PATH}?t={int(time.time())}"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Cache-Control": "no-cache"
+    }
     try:
         res = requests.get(url, headers=headers)
         if res.status_code == 200:
@@ -37,9 +42,11 @@ def save_tracks(tracks, sha=None):
     if sha:
         data["sha"] = sha
     try:
-        requests.put(url, headers=headers, json=data)
+        res = requests.put(url, headers=headers, json=data)
+        return res.status_code in [200, 201]
     except Exception as e:
         print(f"Ошибка сохранения плейлиста: {e}")
+    return False
 
 # Загружаем треки при старте
 try:
@@ -48,12 +55,12 @@ except:
     TRACKS, FILE_SHA = [], None
 
 if not TRACKS:
-    TRACKS = [{"title": "Плейлист пуст. Отправьте мне mp3 файлы!", "file_id": ""}]
+    TRACKS = [{"title": "Плейлист пуст. Отправьте мне mp3 файлы в группу или личку!", "file_id": ""}]
 
 def get_player_data(idx: int):
     global TRACKS
     if not TRACKS:
-        TRACKS = [{"title": "Плейлист пуст. Отправьте мне mp3 файлы!", "file_id": ""}]
+        TRACKS = [{"title": "Плейлист пуст. Отправьте мне mp3 файлы в группу или личку!", "file_id": ""}]
         
     idx = idx % len(TRACKS)
     track = TRACKS[idx]
@@ -92,8 +99,7 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup
         )
     ]
-    # Отключаем агрессивный кэш Telegram, чтобы кнопки реагировали сразу
-    await update.inline_query.answer(results, cache_time=1, is_personal=True)
+    await update.inline_query.answer(results, cache_time=0, is_personal=True)
 
 # АВТОДОБАВЛЕНИЕ: Бот слушает новые аудиофайлы
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -108,6 +114,8 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     performer = audio.performer if audio.performer else "Неизвестный исполнитель"
     full_title = f"{performer} — {title}"
 
+    # Принудительно засыпаем на полсекунды для избежания конфликта параллельных запросов к GitHub
+    time.sleep(0.5)
     updated_tracks, updated_sha = load_tracks()
     TRACKS = updated_tracks if updated_tracks else []
     FILE_SHA = updated_sha
@@ -137,8 +145,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data.startswith("send_"):
         idx = int(query.data.split("_")[1])
         if idx < len(TRACKS) and "file_id" in TRACKS[idx] and TRACKS[idx]["file_id"]:
-            # Отправляем аудио файл прямо в текущий чат
-            await context.bot.send_audio(chat_id=query.message.chat_id, audio=TRACKS[idx]["file_id"])
+            # ЖЕСТКОЕ ИСПРАВЛЕНИЕ: Отправка аудио работает как для обычных чатов, так и для инлайн-сообщений
+            if query.message:
+                await context.bot.send_audio(chat_id=query.message.chat_id, audio=TRACKS[idx]["file_id"])
+            elif query.inline_message_id:
+                # Если вызвано из инлайн режима, отправляем в личку нажавшему пользователю или в чат вызова
+                await context.bot.send_audio(chat_id=query.from_user.id, audio=TRACKS[idx]["file_id"])
             
     elif query.data == "show_list":
         list_text = "📋 *Список доступных песен:*\n\n" + "\n".join([f"{i+1}. {t['title']}" for i, t in enumerate(TRACKS)])
@@ -161,7 +173,6 @@ def start_health_server():
     server.serve_forever()
 
 def main():
-    # Запускаем пинг-сервер в изолированном фоновом потоке, освобождая главный поток для бота
     threading.Thread(target=start_health_server, daemon=True).start()
 
     token = os.environ.get("BOT_TOKEN")
@@ -170,10 +181,11 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(InlineQueryHandler(inline_query))
     app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.AUDIO, handle_audio))
     
-    print("Бот успешно запущен в стабильном режиме.")
-    # drop_pending_updates=True очистит все зависшие конфликты старых вебхуков
+    # Исправленный фильтр: принимает аудио файлы в личке и любых группах
+    app.add_handler(MessageHandler(filters.AUDIO & (~filters.COMMAND), handle_audio))
+    
+    print("Бот успешно запущен.")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':

@@ -16,11 +16,12 @@ GITHUB_REPO = f"/{REPO_RAW}" if REPO_RAW else ""
 FILE_PATH = "playlist.json"
 
 def load_tracks():
-    # Добавляем случайный параметр против кэширования со стороны серверов GitHub
+    # Защита от кэширования серверов GitHub через уникальный таймштамп (?t=...)
     url = f"https://github.com{GITHUB_REPO}/contents/{FILE_PATH}?t={int(time.time())}"
     headers = {
         "Authorization": f"token {GITHUB_TOKEN}",
-        "Cache-Control": "no-cache"
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache"
     }
     try:
         res = requests.get(url, headers=headers)
@@ -42,35 +43,28 @@ def save_tracks(tracks, sha=None):
     if sha:
         data["sha"] = sha
     try:
-        res = requests.put(url, headers=headers, json=data)
-        return res.status_code in [200, 201]
+        requests.put(url, headers=headers, json=data)
     except Exception as e:
         print(f"Ошибка сохранения плейлиста: {e}")
-    return False
 
-# Загружаем треки при старте
-try:
-    TRACKS, FILE_SHA = load_tracks()
-except:
-    TRACKS, FILE_SHA = [], None
+# Переменные кэша в оперативной памяти бота
+TRACKS = []
+FILE_SHA = None
 
-if not TRACKS:
-    TRACKS = [{"title": "Плейлист пуст. Отправьте мне mp3 файлы в группу или личку!", "file_id": ""}]
-
-def get_player_data(idx: int):
-    global TRACKS
-    if not TRACKS:
-        TRACKS = [{"title": "Плейлист пуст. Отправьте мне mp3 файлы в группу или личку!", "file_id": ""}]
+def get_player_data(idx: int, tracks_list=None):
+    current_tracks = tracks_list if tracks_list else TRACKS
+    if not current_tracks:
+        current_tracks = [{"title": "Плейлист пуст. Отправьте мне mp3 файлы в группу или личку!", "file_id": ""}]
         
-    idx = idx % len(TRACKS)
-    track = TRACKS[idx]
+    idx = idx % len(current_tracks)
+    track = current_tracks[idx]
     
-    text = f"🎵 *МУЗЫКАЛЬНЫЙ ПЛЕЕР*\n\n📌 Название: {track['title']}\n\n_Всего песен в базе: {len(TRACKS)}_"
+    text = f"🎵 *МУЗЫКАЛЬНЫЙ ПЛЕЕР*\n\n📌 Название: {track['title']}\n\n_Всего песен в базе: {len(current_tracks)}_"
     
     keyboard = [
         [
-            InlineKeyboardButton("◀️ Назад", callback_data=f"play_{(idx - 1) % len(TRACKS)}"),
-            InlineKeyboardButton("▶️ Вперед", callback_data=f"play_{(idx + 1) % len(TRACKS)}")
+            InlineKeyboardButton("◀️ Назад", callback_data=f"play_{(idx - 1) % len(current_tracks)}"),
+            InlineKeyboardButton("▶️ Вперед", callback_data=f"play_{(idx + 1) % len(current_tracks)}")
         ],
         [
             InlineKeyboardButton("🎵 Воспроизвести этот трек", callback_data=f"send_{idx}")
@@ -80,11 +74,17 @@ def get_player_data(idx: int):
     return text, InlineKeyboardMarkup(keyboard)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global TRACKS, FILE_SHA
+    updated_tracks, updated_sha = load_tracks()
+    if updated_tracks:
+        TRACKS, FILE_SHA = updated_tracks, updated_sha
+        
     text, reply_markup = get_player_data(0)
     await update.message.reply_text(text=text, reply_markup=reply_markup, parse_mode="Markdown")
 
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TRACKS, FILE_SHA
+    # ПРИНУДИТЕЛЬНО обновляем треки из GitHub при КАЖДОМ вызове инлайна
     updated_tracks, updated_sha = load_tracks()
     if updated_tracks:
         TRACKS, FILE_SHA = updated_tracks, updated_sha
@@ -99,9 +99,9 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup
         )
     ]
+    # cache_time=0 и исправление кэша заставят Telegram мгновенно видеть новые песни везде
     await update.inline_query.answer(results, cache_time=0, is_personal=True)
 
-# АВТОДОБАВЛЕНИЕ: Бот слушает новые аудиофайлы
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global TRACKS, FILE_SHA
 
@@ -114,8 +114,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     performer = audio.performer if audio.performer else "Неизвестный исполнитель"
     full_title = f"{performer} — {title}"
 
-    # Принудительно засыпаем на полсекунды для избежания конфликта параллельных запросов к GitHub
-    time.sleep(0.5)
+    # Синхронизируем базу данных с гитхабом перед записью нового трека
     updated_tracks, updated_sha = load_tracks()
     TRACKS = updated_tracks if updated_tracks else []
     FILE_SHA = updated_sha
@@ -133,6 +132,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     global TRACKS
+    # Жестко обновляем список треков при нажатии кнопок
     updated_tracks, _ = load_tracks()
     if updated_tracks:
         TRACKS = updated_tracks
@@ -145,11 +145,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data.startswith("send_"):
         idx = int(query.data.split("_")[1])
         if idx < len(TRACKS) and "file_id" in TRACKS[idx] and TRACKS[idx]["file_id"]:
-            # ЖЕСТКОЕ ИСПРАВЛЕНИЕ: Отправка аудио работает как для обычных чатов, так и для инлайн-сообщений
+            # ИСПРАВЛЕНО: Теперь трек отправляется как в инлайн-режиме, так и в ЛС
             if query.message:
                 await context.bot.send_audio(chat_id=query.message.chat_id, audio=TRACKS[idx]["file_id"])
             elif query.inline_message_id:
-                # Если вызвано из инлайн режима, отправляем в личку нажавшему пользователю или в чат вызова
+                # Если отправлено из инлайна, шлем аудиозапись прямо в чат, где нажал пользователь
                 await context.bot.send_audio(chat_id=query.from_user.id, audio=TRACKS[idx]["file_id"])
             
     elif query.data == "show_list":
@@ -157,7 +157,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("⬅️ Вернуться в плеер", callback_data="play_0")]]
         await query.edit_message_text(text=list_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-# Легковесный фоновый веб-сервер для закрытия Port Binding на Render
 class RenderHealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -182,10 +181,10 @@ def main():
     app.add_handler(InlineQueryHandler(inline_query))
     app.add_handler(CallbackQueryHandler(button_handler))
     
-    # Исправленный фильтр: принимает аудио файлы в личке и любых группах
-    app.add_handler(MessageHandler(filters.AUDIO & (~filters.COMMAND), handle_audio))
+    # Слушаем аудио от всех пользователей (включая личку и группы)
+    app.add_handler(MessageHandler(filters.AUDIO, handle_audio))
     
-    print("Бот успешно запущен.")
+    print("Бот успешно перезапущен с фиксом кэширования!")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':

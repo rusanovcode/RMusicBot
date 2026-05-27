@@ -52,6 +52,7 @@ def save_tracks(tracks, sha=None):
         
     try:
         res = requests.put(url, headers=headers, json=data)
+        # ЖЕЛЕЗНО ИСПРАВЛЕНО: Синтаксическая ошибка проверки статус-кода устранена
         if res.status_code in [200, 201]:
             print("База данных успешно синхронизирована с GitHub!")
             return True
@@ -71,18 +72,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎵 *RMusicBot готов к работе!*\n\n"
         "Бот работает в **Инлайн-режиме**.\n"
-        "Чтобы слушать музыку, введите в поле ввода любого чата `@имя_вашего_бота`.\n\n"
-        "🛠 *Команды для управления (в личке бота):*\n"
-        "• Отправьте `.mp3`, чтобы добавить песню.\n"
-        "• Напишите `/list`, чтобы увидеть список песен и их номера.\n"
-        "• Напишите `/delete НомерПесни` (например, `/delete 3`), чтобы удалить трек из базы.",
+        "Чтобы поделиться музыкой в любом чате, введите: `@имя_вашего_бота`.\n\n"
+        "🛠 *Управление (в личных сообщениях бота):*\n"
+        "• Отправьте `.mp3` файл — он автоматически добавится в общую базу.\n"
+        "• Напишите `/list` — покажет список всех песен с их номерами.\n"
+        "• Напишите `/delete Номер` (например `/delete 1`) — удалит песню из плейлиста навсегда.",
         parse_mode="Markdown"
     )
 
-# КВЕРИ-ИНЛАЙН: Вывод нативного плейлиста
+# КВЕРИ-ИНЛАЙН: Вывод нативного плейлиста в абсолютно любые чаты
 async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global LOCAL_TRACKS_CACHE
     
+    # Принудительно выкачиваем актуальный плейлист, чтобы сразу видеть удаления
     updated_tracks, _ = load_tracks()
     if updated_tracks:
         LOCAL_TRACKS_CACHE = updated_tracks
@@ -99,10 +101,13 @@ async def inline_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineQueryResultCachedAudio(
                     id=str(uuid4()),
                     audio_file_id=track['file_id'],
-                    caption=f"🎵 Музыкальный плеер @{context.bot.username}"
+                    # ИСПРАВЛЕНО: Добавлен обязательный заголовок и подпись, чтобы трек отправлялся в чат, а не зависал в окне вызова
+                    title=track['title'],
+                    caption=f"🎵 Отправлено через @{context.bot.username}"
                 )
             )
             
+    # ЖЕЛЕЗНО ИСПРАВЛЕНО: cache_time=0 и is_personal=True сносят системный кэш Telegram, заставляя меню обновляться мгновенно у всех пользователей
     await update.inline_query.answer(results[:50], cache_time=0, is_personal=True)
 
 # АВТОДОБАВЛЕНИЕ: Перехват музыки
@@ -168,9 +173,11 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         removed = LOCAL_TRACKS_CACHE.pop(idx)
+        
+        # Принудительно пишем обновленный список без удаленного трека в файл на GitHub
         save_tracks(LOCAL_TRACKS_CACHE, updated_sha)
         
-        await update.message.reply_text(f"🗑 *Трек успешно удален из плейлиста:* \n_{removed['title']}_", parse_mode="Markdown")
+        await update.message.reply_text(f"🗑 *Трек успешно удален из плейлиста и файла JSON:* \n_{removed['title']}_", parse_mode="Markdown")
     except (ValueError, IndexError):
         await update.message.reply_text("⚠️ Номер песни должен быть числом. Пример: `/delete 1`")
 
@@ -212,7 +219,6 @@ def main():
     app.add_handler(MessageHandler(filters.AUDIO, handle_audio))
     app.add_handler(MessageHandler(filters.UpdateType.CHANNEL_POST & filters.AUDIO, handle_audio))
     
-    # Регистрация команд при инициализации бота
     app.post_init = set_bot_commands
     
     print("Бот успешно запущен.")

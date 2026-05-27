@@ -4,8 +4,9 @@ import base64
 import requests
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, BotCommand, InlineQueryResultCachedAudio
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, InlineQueryHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, InlineQueryHandler, MessageHandler, filters, ContextTypes
 from uuid import uuid4
 
 # Конфигурация GitHub для автосохранения
